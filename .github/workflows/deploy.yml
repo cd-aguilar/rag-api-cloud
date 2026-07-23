@@ -39,6 +39,11 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          # La action intenta por defecto agregar tags a la sesión
+          # (sts:TagSession), permiso que nuestro trust policy no
+          # otorga. Sin este flag, TODO el AssumeRoleWithWebIdentity
+          # falla con "Not authorized", no solo el tagging.
+          role-skip-session-tagging: true
 
       - name: Login a Amazon ECR
         id: ecr-login
@@ -65,8 +70,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - uses: hashicorp/setup-terraform@v3
+          role-skip-session-tagging: true
         with:
           terraform_version: "1.7.5"
 
