@@ -49,6 +49,15 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # El repo de ECR lo crea Terraform (modulo ecs), pero
+      # terraform-apply corre DESPUES de este job en el pipeline.
+      # Sin este paso, el docker push de mas abajo falla porque el
+      # repositorio todavia no existe la primera vez que se corre.
+      - name: Asegurar que el repositorio ECR existe
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" \
+            || aws ecr create-repository --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" --image-scanning-configuration scanOnPush=true
+
       - name: Build y push de la imagen
         id: build
         env:
@@ -82,6 +91,16 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      # El repo ECR pudo haber sido creado por CLI en build-and-push
+      # (primera corrida). Si Terraform todavia no lo tiene en su
+      # estado, lo importamos para que "apply" no intente crearlo de
+      # nuevo y falle con "ya existe". Si ya esta importado, el
+      # comando falla inofensivamente y seguimos (|| true).
+      - name: Importar ECR al estado de Terraform si hace falta
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform import module.ecs.aws_ecr_repository.app "$ECR_REPOSITORY" || true
 
       - name: Terraform apply
         working-directory: ${{ env.TF_DIR }}
