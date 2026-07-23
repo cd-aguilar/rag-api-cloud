@@ -1,49 +1,50 @@
 name: Teardown
- 
+
 # Boton manual para apagar todo despues de una ventana de demo.
 # Este es el workflow que mantiene el proyecto en ~$0 el resto del mes.
 on:
   workflow_dispatch:
- 
+
 permissions:
   id-token: write
   contents: read
- 
+
 env:
   AWS_REGION: us-east-1
   TF_DIR: infra/environments/demo
- 
+
 jobs:
   terraform-destroy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
- 
+
       - name: Configurar credenciales AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-skip-session-tagging: true
- 
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
- 
+
       - name: Terraform init
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init \
+          terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
- 
+
       # Necesita el mismo container_image que el ultimo apply para que
       # el plan de destroy no falle por una variable requerida sin valor.
       # El valor exacto no importa para un destroy, pero Terraform igual
-      # exige que la variable este definida.
+      # exige que la variable este definida. -input=false evita que se
+      # quede colgado preguntando interactivamente si falta algo.
       - name: Terraform destroy
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform destroy -auto-approve \
+          terraform destroy -input=false -auto-approve \
             -var="container_image=placeholder" \
             -var="aws_region=${{ env.AWS_REGION }}"

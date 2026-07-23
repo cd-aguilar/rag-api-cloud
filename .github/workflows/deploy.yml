@@ -88,7 +88,7 @@ jobs:
       - name: Terraform init
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init \
+          terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
@@ -97,15 +97,23 @@ jobs:
       # estado, lo importamos para que "apply" no intente crearlo de
       # nuevo y falle con "ya existe". Si ya esta importado, el
       # comando falla inofensivamente y seguimos (|| true).
+      #
+      # -input=false es obligatorio aca: sin esto, Terraform intenta
+      # preguntar interactivamente por variables sin resolver (como
+      # container_image) y se queda colgado esperando un input que
+      # en CI nunca llega -- exactamente lo que paso la primera vez.
       - name: Importar ECR al estado de Terraform si hace falta
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform import module.ecs.aws_ecr_repository.app "$ECR_REPOSITORY" || true
+          terraform import -input=false \
+            -var="container_image=${{ needs.build-and-push.outputs.image_uri }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            module.ecs.aws_ecr_repository.app "$ECR_REPOSITORY" || true
 
       - name: Terraform apply
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform apply -auto-approve \
+          terraform apply -input=false -auto-approve \
             -var="container_image=${{ needs.build-and-push.outputs.image_uri }}" \
             -var="aws_region=${{ env.AWS_REGION }}" \
             -var="task_cpu=${{ inputs.task_cpu }}" \
