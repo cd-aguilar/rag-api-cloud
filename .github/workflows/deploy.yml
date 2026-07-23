@@ -24,7 +24,49 @@ env:
   TF_DIR: infra/environments/demo
 
 jobs:
+  # --- Job 1: crear SOLO el repo ECR, con Terraform, antes que nada. ---
+  # Reemplaza el enfoque anterior (crear por CLI + "terraform import"),
+  # que resulto fragil: el import fallaba silenciosamente en CI y
+  # Terraform terminaba intentando crear un repo que ya existia.
+  # -target apunta a un unico recurso: es un "bootstrap" acotado, no
+  # el patron general para el resto de la infra (eso lo hace el job
+  # terraform-apply, sin -target, con el grafo completo).
+  ecr-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-skip-session-tagging: true
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      # container_image no se usa en este recurso puntual, pero
+      # Terraform exige que TODAS las variables declaradas tengan
+      # valor al parsear, incluso con -target. "placeholder" alcanza.
+      - name: Crear (o confirmar) el repositorio ECR
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform apply -input=false -auto-approve \
+            -target=module.ecs.aws_ecr_repository.app \
+            -var="container_image=placeholder" \
+            -var="aws_region=${{ env.AWS_REGION }}"
+
   build-and-push:
+    needs: ecr-bootstrap
     runs-on: ubuntu-latest
     outputs:
       image_uri: ${{ steps.build.outputs.image_uri }}
@@ -39,24 +81,11 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          # La action intenta por defecto agregar tags a la sesión
-          # (sts:TagSession), permiso que nuestro trust policy no
-          # otorga. Sin este flag, TODO el AssumeRoleWithWebIdentity
-          # falla con "Not authorized", no solo el tagging.
           role-skip-session-tagging: true
 
       - name: Login a Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
-
-      # El repo de ECR lo crea Terraform (modulo ecs), pero
-      # terraform-apply corre DESPUES de este job en el pipeline.
-      # Sin este paso, el docker push de mas abajo falla porque el
-      # repositorio todavia no existe la primera vez que se corre.
-      - name: Asegurar que el repositorio ECR existe
-        run: |
-          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" \
-            || aws ecr create-repository --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" --image-scanning-configuration scanOnPush=true
 
       - name: Build y push de la imagen
         id: build
@@ -92,24 +121,10 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
-      # El repo ECR pudo haber sido creado por CLI en build-and-push
-      # (primera corrida). Si Terraform todavia no lo tiene en su
-      # estado, lo importamos para que "apply" no intente crearlo de
-      # nuevo y falle con "ya existe". Si ya esta importado, el
-      # comando falla inofensivamente y seguimos (|| true).
-      #
-      # -input=false es obligatorio aca: sin esto, Terraform intenta
-      # preguntar interactivamente por variables sin resolver (como
-      # container_image) y se queda colgado esperando un input que
-      # en CI nunca llega -- exactamente lo que paso la primera vez.
-      - name: Importar ECR al estado de Terraform si hace falta
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform import -input=false \
-            -var="container_image=${{ needs.build-and-push.outputs.image_uri }}" \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            module.ecs.aws_ecr_repository.app "$ECR_REPOSITORY" || true
-
+      # Ya no hace falta "terraform import": el ECR fue creado por
+      # Terraform mismo en el job ecr-bootstrap, y ambos jobs
+      # comparten el mismo backend remoto (S3 + DynamoDB), asi que
+      # el estado ya lo tiene registrado.
       - name: Terraform apply
         working-directory: ${{ env.TF_DIR }}
         run: |
