@@ -4,6 +4,13 @@ resource "aws_ecr_repository" "app" {
   name                 = var.project_name
   image_tag_mutability = "MUTABLE"
 
+  # Sin esto, "terraform destroy" falla si el repo tiene imagenes
+  # adentro (RepositoryNotEmptyException) -- y siempre las va a tener,
+  # porque cada deploy sube una imagen nueva. Para un proyecto de
+  # portafolio con el patron de infraestructura efimera, el teardown
+  # tiene que poder borrar todo sin intervencion manual.
+  force_delete = true
+
   image_scanning_configuration {
     scan_on_push = true
   }
@@ -25,6 +32,13 @@ resource "aws_cloudwatch_log_group" "app" {
 # El contenedor lo descarga al arrancar (ver app/main.py). ---
 resource "aws_s3_bucket" "chroma_data" {
   bucket = "${var.project_name}-chroma-data-${data.aws_caller_identity.current.account_id}"
+
+  # Igual que force_delete en el ECR: sin esto, destroy falla si el
+  # bucket tiene el indice de Chroma adentro (que siempre lo tiene).
+  # No hay perdida de datos real: el indice sigue existiendo en tu
+  # maquina local (data/chroma/), solo hay que volver a subirlo con
+  # "aws s3 sync" despues del proximo deploy.
+  force_destroy = true
 
   tags = { Name = "${var.project_name}-chroma-data" }
 }
