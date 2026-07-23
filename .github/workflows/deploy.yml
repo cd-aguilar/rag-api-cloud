@@ -1,0 +1,93 @@
+name: Deploy
+
+# workflow_dispatch = boton manual en la pestana Actions de GitHub.
+# A proposito NO se dispara con cada push a main: con el patron de
+# infraestructura efimera, cada apply cuesta (aunque sea centavos) y
+# corre NAT Gateway + Fargate. Vos decidis cuando encender el demo.
+on:
+  workflow_dispatch:
+    inputs:
+      task_cpu:
+        description: "vCPU del task Fargate (unidades AWS: 256 = 0.25 vCPU)"
+        default: "256"
+      task_memory:
+        description: "Memoria del task en MB"
+        default: "512"
+
+permissions:
+  id-token: write # requerido por OIDC: sin esto GitHub no puede pedir el token
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: rag-api-cloud
+  TF_DIR: infra/environments/demo
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC: GitHub le pide a AWS un token de corta duracion usando
+      # el rol configurado en secrets.AWS_ROLE_ARN. No hay ninguna
+      # access key guardada en ningun lado.
+      - name: Configurar credenciales AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login a Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build y push de la imagen
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+  terraform-apply:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform apply
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform apply -auto-approve \
+            -var="container_image=${{ needs.build-and-push.outputs.image_uri }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="task_cpu=${{ inputs.task_cpu }}" \
+            -var="task_memory=${{ inputs.task_memory }}"
+
+      - name: Mostrar URL del demo
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          echo "### Demo desplegado" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: $(terraform output -raw demo_url)" >> "$GITHUB_STEP_SUMMARY"

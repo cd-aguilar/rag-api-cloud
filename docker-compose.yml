@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Credenciales de AWS de tu maquina, solo lectura. El contenedor
+      # las usa para autenticar boto3 contra Bedrock exactamente como
+      # lo haria el task role en Fargate.
+      - ~/.aws:/home/appuser/.aws:ro
+      # Indice de Chroma generado por scripts/reindex.py. Se monta
+      # desde tu maquina para no tener que reconstruir la imagen cada
+      # vez que reindexas.
+      - ./data/chroma:/data/chroma
+    environment:
+      - RAG_API_KEY=dev-local-key
+      - RAG_CHROMA_PERSIST_DIR=/data/chroma
+      - RAG_BEDROCK_REGION=us-east-1
+      # Claude 3.5 Haiku fue retirado de Bedrock; el sucesor (Haiku 4.5)
+      # se invoca via cross-region inference profile (prefijo "us.").
+      - RAG_BEDROCK_LLM_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0

@@ -1,0 +1,22 @@
+@baseUrl = http://localhost:8000
+@apiKey = dev-local-key
+
+### Health check (no requiere API key)
+GET {{baseUrl}}/health
+
+### Query al RAG
+POST {{baseUrl}}/query
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "question": "¿Que es RAG y como se conecta con Bedrock en este proyecto?",
+  "top_k": 4
+}
+
+### Metrics (observabilidad basica de LLMOps)
+GET {{baseUrl}}/metrics
+
+### Docs interactivas de FastAPI (Swagger UI) -- abrir en el navegador,
+### no vía REST Client
+# GET {{baseUrl}}/docs
