@@ -18,6 +18,26 @@ resource "aws_cloudwatch_log_group" "app" {
   tags = { Name = var.project_name }
 }
 
+# --- Bucket para el indice de Chroma. NO se sube por CI/CD ni vive en
+# git (el .gitignore excluye data/ porque contiene embeddings de notas
+# privadas). Se sube una vez a mano:
+#   aws s3 sync data/chroma s3://<este-bucket>/chroma-data/
+# El contenedor lo descarga al arrancar (ver app/main.py). ---
+resource "aws_s3_bucket" "chroma_data" {
+  bucket = "${var.project_name}-chroma-data-${data.aws_caller_identity.current.account_id}"
+
+  tags = { Name = "${var.project_name}-chroma-data" }
+}
+
+resource "aws_s3_bucket_public_access_block" "chroma_data" {
+  bucket = aws_s3_bucket.chroma_data.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_ecs_cluster" "this" {
   name = "${var.project_name}-cluster"
 
@@ -105,6 +125,27 @@ resource "aws_iam_role_policy" "bedrock_invoke" {
   })
 }
 
+resource "aws_iam_role_policy" "chroma_data_read" {
+  name = "${var.project_name}-chroma-data-read"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = [aws_s3_bucket.chroma_data.arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${aws_s3_bucket.chroma_data.arn}/*"]
+      }
+    ]
+  })
+}
+
 resource "aws_ecs_task_definition" "app" {
   family                   = var.project_name
   requires_compatibilities = ["FARGATE"]
@@ -127,6 +168,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "RAG_BEDROCK_REGION", value = var.aws_region },
       { name = "RAG_BEDROCK_LLM_MODEL_ID", value = var.bedrock_llm_model_id },
       { name = "RAG_BEDROCK_EMBEDDING_MODEL_ID", value = var.bedrock_embedding_model_id },
+      { name = "RAG_CHROMA_S3_BUCKET", value = aws_s3_bucket.chroma_data.bucket },
     ]
 
     logConfiguration = {

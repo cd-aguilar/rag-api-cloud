@@ -10,3 +10,8 @@ output "cluster_name" {
 output "service_name" {
   value = aws_ecs_service.app.name
 }
+
+output "chroma_bucket_name" {
+  description = "Subir el indice aca: aws s3 sync data/chroma s3://<esto>/chroma-data/"
+  value       = aws_s3_bucket.chroma_data.bucket
+}

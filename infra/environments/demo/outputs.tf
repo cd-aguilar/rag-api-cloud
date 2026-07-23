@@ -16,3 +16,8 @@ output "ecs_service_name" {
   description = "Lo necesita deploy.yml para forzar un nuevo deployment tras el push"
   value       = module.ecs.service_name
 }
+
+output "chroma_bucket_name" {
+  description = "Subir el indice aca: aws s3 sync data/chroma s3://<esto>/chroma-data/"
+  value       = module.ecs.chroma_bucket_name
+}

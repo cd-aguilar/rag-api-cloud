@@ -11,8 +11,10 @@ Endpoints:
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
+import boto3
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
@@ -26,8 +28,48 @@ settings = get_settings()
 METRICS = {"total_queries": 0, "total_tokens": 0, "avg_latency_ms": 0.0}
 
 
+def sync_chroma_from_s3() -> None:
+    """Descarga el indice de Chroma desde S3 antes de arrancar.
+
+    El indice NO viaja en la imagen Docker ni en el repo de git (el
+    .gitignore excluye data/ a proposito: contiene embeddings de notas
+    privadas). En su lugar, se sube una vez a un bucket S3 privado
+    (aws s3 sync data/chroma s3://<bucket>/chroma-data/) y el
+    contenedor lo descarga aca, al arrancar, usando el permiso IAM del
+    task role (sin credenciales estaticas).
+
+    Si RAG_CHROMA_S3_BUCKET no esta seteado (caso local con
+    docker-compose, que monta el volumen directo), esta funcion no
+    hace nada.
+    """
+    if not settings.chroma_s3_bucket:
+        print("RAG_CHROMA_S3_BUCKET no configurado, usando indice local existente")
+        return
+
+    print(f"Sincronizando indice de Chroma desde s3://{settings.chroma_s3_bucket}/{settings.chroma_s3_prefix}...")
+    s3 = boto3.client("s3")
+    dest_root = Path(settings.chroma_persist_dir)
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    paginator = s3.get_paginator("list_objects_v2")
+    downloaded = 0
+    for page in paginator.paginate(Bucket=settings.chroma_s3_bucket, Prefix=settings.chroma_s3_prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            relative_path = key[len(settings.chroma_s3_prefix):]
+            if not relative_path:
+                continue
+            local_path = dest_root / relative_path
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(settings.chroma_s3_bucket, key, str(local_path))
+            downloaded += 1
+
+    print(f"Listo: {downloaded} archivos descargados a {dest_root}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    sync_chroma_from_s3()
     # Carga el pipeline (conexión a ChromaDB + cliente Bedrock) una sola vez
     # al arrancar el contenedor, no en cada request.
     app.state.rag = RAGPipeline(settings)
